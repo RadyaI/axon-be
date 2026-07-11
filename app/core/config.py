@@ -16,29 +16,28 @@ class Settings(BaseSettings):
     app_name: str = "Axon Classroom Engagement Analytics"
 
     # --- Kamera / Seat Management ---
-    # Daftar seat_id yang valid untuk prototype 5 ESP32-CAM.
-    # Kalau nanti nambah kamera, cukup update list ini.
     valid_seat_ids: list[str] = ["A1", "A2", "A3", "A4", "A5"]
 
     # --- Concurrency Control ---
-    # Batas jumlah inference (MediaPipe + EmotiEffLib) yang boleh jalan
-    # BERSAMAAN di CPU. Karena inference itu CPU-bound & laptop biasa
-    # gak punya banyak core buat paralel penuh, kita batasi supaya
-    # gak saling rebutan resource dan bikin latency melonjak.
-    # Mulai dari 1 dulu (paling aman/stabil), bisa dinaikkan kalau CPU kuat.
     max_concurrent_inference: int = 1
 
     # --- Temporal Analysis ---
-    # Jumlah frame historis yang disimpan per seat untuk smoothing
-    # & deteksi tren (bukan keputusan dari 1 frame doang).
     temporal_window_size: int = 10
-
-    # Berapa frame berturut-turut engagement rendah sebelum status
-    # berubah jadi "Need Attention".
     low_engagement_consecutive_threshold: int = 5
 
+    # --- Drowsiness Detection (EAR) ---
+    # Threshold rasio bukaan mata. Nilai umum di riset = 0.21-0.25,
+    # TAPI WAJIB dikalibrasi ulang manual pakai foto asli dari ESP32-CAM
+    # kelas lo (angle kamera beda = threshold ideal bisa beda).
+    ear_threshold: float = 0.21
+    # Berapa frame berturut-turut EAR rendah sebelum status jadi "Drowsy".
+    # Dipisah dari low_engagement_consecutive_threshold karena secara
+    # konsep beda (ngantuk fisiologis vs disengagement emosional).
+    ear_consecutive_frames: int = 5
+
     # --- Model Paths ---
-    emotiefflib_model_name: str = "enet_b0_8_best_afew"  # model ringan, cocok CPU
+    emotiefflib_model_name: str = "enet_b0_8_best_afew"
+    face_landmarker_model_name: str = "face_landmarker.task"
 
     # --- Firebase ---
     firebase_credentials_path: str = "app/firebase/service_account.json"

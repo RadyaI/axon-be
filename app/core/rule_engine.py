@@ -1,21 +1,10 @@
 """
-Rule Engine — mengubah (emotion, confidence) mentah dari AI menjadi
-engagement_score (0-100) dan status ("Focused" / "Neutral" / "Need Attention").
-
-Desain sengaja config-driven (EMOTION_WEIGHTS sebagai dict), BUKAN
-if-elif menumpuk, supaya:
-1. Bobot tiap emosi gampang di-tuning tanpa bongkar logic.
-2. Nambah/ubah emosi baru tinggal ubah dict, gak perlu sentuh method lain.
+Rule Engine -- mengubah (emotion, confidence, ear) mentah dari AI
+menjadi engagement_score (0-100) dan status.
 """
 
 from app.core.config import settings
 
-# --- Bobot dasar tiap emosi terhadap engagement (skala 0-100) ---
-# Ini ASUMSI AWAL yang MASIH BISA di-tuning berdasarkan observasi lapangan
-# nanti. Logikanya:
-#   - Neutral & Happiness -> asosiasi dengan siswa yang engaged/fokus
-#   - Sadness, Fear, Anger, Disgust -> asosiasi dengan distraksi/disengagement
-#   - Surprise, Contempt -> netral cenderung ambigu, diberi skor tengah
 EMOTION_WEIGHTS: dict[str, int] = {
     "Happiness": 85,
     "Neutral": 75,
@@ -27,40 +16,31 @@ EMOTION_WEIGHTS: dict[str, int] = {
     "Disgust": 20,
 }
 
-DEFAULT_WEIGHT_IF_UNKNOWN = 50  # fallback kalau ada label emosi yang gak dikenal
+DEFAULT_WEIGHT_IF_UNKNOWN = 50
 
 
 class RuleEngine:
-    """
-    Mengelola state temporal per seat (histori beberapa frame terakhir)
-    dan menentukan status akhir berdasarkan tren, bukan 1 frame doang.
-    """
-
     def __init__(self) -> None:
-        # Histori engagement_score per seat, contoh:
-        # {"A1": [70, 68, 65, ...], "A2": [...]}
         self._history: dict[str, list[int]] = {}
+        # History EAR terpisah dari engagement_score, karena "ngantuk"
+        # dan "disengagement emosional" itu 2 sinyal berbeda yang perlu
+        # dilacak konsistensinya masing-masing.
+        self._ear_history: dict[str, list[float]] = {}
 
-    def compute_engagement(self, seat: str, emotion: str, confidence: float) -> tuple[int, str]:
-        """
-        Hitung engagement_score & status untuk 1 seat, berdasarkan
-        emotion+confidence saat ini DAN histori beberapa frame terakhir.
-        """
+    def compute_engagement(
+        self, seat: str, emotion: str, confidence: float, ear: float
+    ) -> tuple[int, str]:
         raw_score = self._emotion_to_score(emotion, confidence)
         self._update_history(seat, raw_score)
+        self._update_ear_history(seat, ear)
 
         smoothed_score = self._smoothed_score(seat)
-        status = self._determine_status(seat, smoothed_score)
+        is_drowsy = self._is_consistently_drowsy(seat)
+        status = self._determine_status(seat, smoothed_score, is_drowsy)
 
         return smoothed_score, status
 
     def _emotion_to_score(self, emotion: str, confidence: float) -> int:
-        """
-        Base weight emosi di-skalakan oleh confidence.
-        Kalau confidence rendah (model kurang yakin), skornya ditarik
-        mendekati netral (50) supaya tidak terlalu ekstrem dari 1 prediksi
-        yang tidak meyakinkan.
-        """
         base_weight = EMOTION_WEIGHTS.get(emotion, DEFAULT_WEIGHT_IF_UNKNOWN)
         neutral_point = 50
         adjusted = neutral_point + (base_weight - neutral_point) * confidence
@@ -69,25 +49,46 @@ class RuleEngine:
     def _update_history(self, seat: str, score: int) -> None:
         history = self._history.setdefault(seat, [])
         history.append(score)
-        # Jaga histori maksimal sesuai temporal_window_size, buang yang lama
         if len(history) > settings.temporal_window_size:
             history.pop(0)
 
+    def _update_ear_history(self, seat: str, ear: float) -> None:
+        history = self._ear_history.setdefault(seat, [])
+        history.append(ear)
+        # Jaga history EAR gak lebih panjang dari yang dibutuhkan buat
+        # cek consecutive frame -- gak perlu ikut temporal_window_size.
+        max_len = settings.ear_consecutive_frames
+        if len(history) > max_len:
+            history.pop(0)
+
     def _smoothed_score(self, seat: str) -> int:
-        """Rolling average dari histori, biar 1 frame aneh gak langsung bikin lonjakan."""
         history = self._history[seat]
         return round(sum(history) / len(history))
 
-    def _determine_status(self, seat: str, smoothed_score: int) -> str:
+    def _is_consistently_drowsy(self, seat: str) -> bool:
         """
-        Status "Need Attention" HANYA muncul kalau engagement rendah
-        secara KONSISTEN (beberapa frame berturut-turut), bukan dari
-        1 frame doang — supaya tidak false alarm dari gerakan sesaat
-        (misal siswa nunduk ambil pulpen jatuh).
+        True kalau EAR di bawah threshold selama N frame berturut-turut
+        (N = ear_consecutive_frames). Sama filosofinya kayak
+        low_engagement_consecutive_threshold -- gak boleh dari 1 frame
+        doang, biar kedipan mata normal gak dianggap ngantuk.
         """
+        history = self._ear_history.get(seat, [])
+        threshold = settings.ear_consecutive_frames
+
+        if len(history) < threshold:
+            return False
+
+        return all(ear < settings.ear_threshold for ear in history[-threshold:])
+
+    def _determine_status(self, seat: str, smoothed_score: int, is_drowsy: bool) -> str:
+        # Cek drowsy DULUAN -- ini override status lain, karena mata
+        # tertutup konsisten adalah sinyal fisiologis yang lebih kuat
+        # dibanding skor emosi buat kasus "tidur di meja".
+        if is_drowsy:
+            return "Drowsy"
+
         history = self._history[seat]
         threshold = settings.low_engagement_consecutive_threshold
-
         recent_frames = history[-threshold:]
         is_consistently_low = (
             len(recent_frames) >= threshold
@@ -101,5 +102,5 @@ class RuleEngine:
         return "Neutral"
 
     def reset_seat(self, seat: str) -> None:
-        """Reset histori 1 seat — berguna kalau mau restart sesi/kelas baru."""
         self._history.pop(seat, None)
+        self._ear_history.pop(seat, None)
