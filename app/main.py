@@ -10,6 +10,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.predict import router as predict_router
+from app.api.session import router as session_router
+from app.api.engagement import router as engagement_router
+
 from app.core.config import settings
 from app.firebase.client import init_firebase
 
@@ -25,7 +28,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
 app.include_router(predict_router)
-
+app.include_router(session_router)
+app.include_router(engagement_router)
 
 @app.get("/")
 async def health_check():

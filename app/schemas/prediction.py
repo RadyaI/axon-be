@@ -43,3 +43,16 @@ class EngagementLogEntry(BaseModel):
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+class EngagementListResponse(BaseModel):
+    count: int
+    data: list[EngagementLogEntry]
+
+
+class SeatLatestEntry(BaseModel):
+    seat: str
+    data: EngagementLogEntry | None  # null kalau seat itu belum pernah kirim data
+
+
+class LatestEngagementResponse(BaseModel):
+    data: list[SeatLatestEntry]

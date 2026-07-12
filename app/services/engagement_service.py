@@ -64,3 +64,13 @@ async def process_frame(image_bytes: bytes, seat: str) -> PredictionResponse:
 def _decode_image(image_bytes: bytes) -> np.ndarray:
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     return np.array(image)
+
+def reset_all_seats() -> None:
+    """
+    Reset histori rule engine (engagement_score & EAR) untuk semua seat.
+
+    Dipanggil saat sesi baru dimulai (lihat app/api/session.py), supaya
+    smoothing/consecutive-check tidak ke-pengaruh sisa data sesi lama.
+    """
+    for seat in settings.valid_seat_ids:
+        _rule_engine.reset_seat(seat)
