@@ -35,6 +35,15 @@ class Settings(BaseSettings):
     # konsep beda (ngantuk fisiologis vs disengagement emosional).
     ear_consecutive_frames: int = 5
 
+    # --- Distraction Detection (Head Pose / Yaw) ---
+    # Berapa derajat dianggap "menengok" dari kamera. Nilai awal perkiraan,
+    # WAJIB dikalibrasi manual pakai foto asli dari ESP32-CAM kelas lo.
+    yaw_threshold_degrees: float = 25.0
+    # Sama filosofinya kayak ear_consecutive_frames -- butuh konsisten
+    # beberapa frame biar nengok sebentar (misal liat papan tulis) gak
+    # langsung dianggap "gak fokus".
+    yaw_consecutive_frames: int = 5
+
     # --- Model Paths ---
     emotiefflib_model_name: str = "enet_b0_8_best_afew"
     face_landmarker_model_name: str = "face_landmarker.task"

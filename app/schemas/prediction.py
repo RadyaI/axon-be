@@ -5,7 +5,9 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.core.config import settings
 
-EngagementStatus = Literal["Focused", "Neutral", "Need Attention", "Drowsy", "No Face Detected"]
+EngagementStatus = Literal[
+    "Focused", "Neutral", "Need Attention", "Drowsy", "Distracted", "No Face Detected"
+]
 
 
 class PredictionResponse(BaseModel):
@@ -13,6 +15,7 @@ class PredictionResponse(BaseModel):
     emotion: str
     confidence: float = Field(ge=0.0, le=1.0)
     ear: float | None = Field(default=None, ge=0.0)
+    yaw: float | None = Field(default=None)
     engagement_score: int = Field(ge=0, le=100)
     status: EngagementStatus
     timestamp: datetime
@@ -32,6 +35,7 @@ class EngagementLogEntry(BaseModel):
     emotion: str
     confidence: float
     ear: float | None = None
+    yaw: float | None = None
     engagement_score: int
     status: EngagementStatus
     timestamp: datetime

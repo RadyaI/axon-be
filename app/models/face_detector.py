@@ -1,22 +1,15 @@
 """
 Wrapper untuk MediaPipe Face Landmarker (Tasks API).
 
-Kenapa ganti dari FaceDetector ke FaceLandmarker:
-FaceDetector cuma ngasih bounding box wajah, gak ngasih titik detail
-kayak mata/mulut. Padahal kita butuh landmark mata buat hitung Eye
-Aspect Ratio (EAR) -- sinyal buat deteksi mata tertutup (ngantuk/tidur),
-kasus yang sebelumnya sering salah kebaca sebagai "Sadness" oleh model
-emosi. FaceLandmarker sekaligus mendeteksi wajah DAN landmark, jadi
-gantiin 2 kebutuhan (deteksi + landmark) dengan 1 model.
-
-Class ini HANYA mendeteksi & crop wajah + landmark. Tidak melakukan
-identifikasi/pengenalan identitas siapa pun -- sesuai prinsip privasi
-yang sudah didiskusikan dengan dosen pembimbing.
+Menghasilkan 3 hal dari 1 foto: crop wajah, EAR (deteksi mata tertutup),
+dan yaw (deteksi kepala menengok) -- ketiganya dari 1 model landmark yang
+sama, tidak perlu model tambahan.
 """
 
 import math
 from pathlib import Path
 
+import cv2
 import mediapipe as mp
 import numpy as np
 
@@ -25,28 +18,41 @@ FaceLandmarker = mp.tasks.vision.FaceLandmarker
 FaceLandmarkerOptions = mp.tasks.vision.FaceLandmarkerOptions
 VisionRunningMode = mp.tasks.vision.RunningMode
 
-# Path ke model .task yang sudah didownload manual dari MediaPipe model zoo.
 MODEL_PATH = Path(__file__).parent / "weights" / "face_landmarker.task"
 
-# --- Index landmark mata (dari 478 titik face mesh MediaPipe) ---
-# Urutan: [kiri, atas1, atas2, kanan, bawah1, bawah2] -- dipakai buat EAR.
 LEFT_EYE_IDX = [362, 385, 387, 263, 373, 380]
 RIGHT_EYE_IDX = [33, 160, 158, 133, 153, 144]
 
+# Index landmark buat head pose (solvePnP): ujung hidung, dagu, sudut
+# mata kiri/kanan, sudut mulut kiri/kanan -- titik yang stabil & gampang
+# dikorelasikan ke model wajah 3D generik.
+POSE_LANDMARK_IDX = {
+    "nose_tip": 1,
+    "chin": 152,
+    "left_eye_corner": 263,
+    "right_eye_corner": 33,
+    "left_mouth_corner": 291,
+    "right_mouth_corner": 61,
+}
+
+# Titik acuan wajah 3D generik dalam satuan mm (model rata-rata manusia,
+# BUKAN diambil dari wajah spesifik siapa pun -- jadi tidak melanggar
+# prinsip privasi proyek ini).
+FACE_3D_MODEL = np.array([
+    (0.0, 0.0, 0.0),          # nose_tip
+    (0.0, -330.0, -65.0),     # chin
+    (-225.0, 170.0, -135.0),  # left_eye_corner
+    (225.0, 170.0, -135.0),   # right_eye_corner
+    (-150.0, -150.0, -125.0), # left_mouth_corner
+    (150.0, -150.0, -125.0),  # right_mouth_corner
+], dtype=np.float64)
+
 
 class FaceDetectorService:
-    """
-    Wrapper untuk deteksi wajah + landmark dari 1 foto.
-
-    Menggunakan running_mode=IMAGE karena tiap request dari ESP32-CAM
-    adalah 1 foto berdiri sendiri (bukan stream video kontinu).
-    """
-
     def __init__(self, max_faces: int = 3, margin_ratio: float = 0.2) -> None:
         if not MODEL_PATH.exists():
             raise FileNotFoundError(
-                f"Model face landmarker tidak ditemukan di {MODEL_PATH}. "
-                "Download dulu file face_landmarker.task dari MediaPipe model zoo."
+                f"Model face landmarker tidak ditemukan di {MODEL_PATH}."
             )
 
         options = FaceLandmarkerOptions(
@@ -57,15 +63,10 @@ class FaceDetectorService:
         self._landmarker = FaceLandmarker.create_from_options(options)
         self._margin_ratio = margin_ratio
 
-    def detect(self, image_rgb: np.ndarray) -> tuple[np.ndarray, float] | None:
+    def detect(self, image_rgb: np.ndarray) -> tuple[np.ndarray, float, float] | None:
         """
-        Deteksi wajah dari 1 foto (format RGB, HWC, uint8), lalu hitung EAR-nya.
-
-        Return:
-            (face_crop, ear) jika wajah terdeteksi, None jika tidak ada wajah.
-            Kalau ada lebih dari 1 wajah, ambil yang bounding box-nya PALING
-            BESAR -- asumsinya itu siswa yang duduk di depan kamera, bukan
-            orang lewat di background.
+        Return: (face_crop, ear, yaw_degrees) jika wajah terdeteksi,
+        None jika tidak ada wajah sama sekali.
         """
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
         result = self._landmarker.detect(mp_image)
@@ -75,8 +76,6 @@ class FaceDetectorService:
 
         img_h, img_w = image_rgb.shape[:2]
 
-        # Pilih wajah dengan bounding box terbesar (dihitung dari landmark,
-        # karena FaceLandmarker gak ngasih bbox langsung kayak FaceDetector).
         largest_landmarks = max(
             result.face_landmarks,
             key=lambda lm: self._bbox_area(lm, img_w, img_h),
@@ -84,8 +83,9 @@ class FaceDetectorService:
 
         face_crop = self._crop_with_margin(image_rgb, largest_landmarks, img_w, img_h)
         ear = self._compute_ear(largest_landmarks, img_w, img_h)
+        yaw = self._estimate_yaw(largest_landmarks, img_w, img_h)
 
-        return face_crop, ear
+        return face_crop, ear, yaw
 
     def _bbox_area(self, landmarks, img_w: int, img_h: int) -> float:
         xs = [lm.x * img_w for lm in landmarks]
@@ -110,24 +110,12 @@ class FaceDetectorService:
         return image_rgb[y1:y2, x1:x2]
 
     def _compute_ear(self, landmarks, img_w: int, img_h: int) -> float:
-        """
-        Eye Aspect Ratio -- rasio tinggi:lebar bukaan mata.
-        Mata terbuka normal ~0.25-0.35, mata tertutup mendekati 0.
-
-        Dihitung dari rata-rata mata kiri & kanan, biar lebih stabil
-        kalau 1 sisi wajah agak miring dari kamera.
-        """
         left_ear = self._eye_ratio(landmarks, LEFT_EYE_IDX, img_w, img_h)
         right_ear = self._eye_ratio(landmarks, RIGHT_EYE_IDX, img_w, img_h)
         return (left_ear + right_ear) / 2.0
 
     def _eye_ratio(self, landmarks, eye_idx: list[int], img_w: int, img_h: int) -> float:
-        # Landmark MediaPipe itu normalized (0.0-1.0), WAJIB dikaliin
-        # dimensi asli gambar dulu sebelum hitung jarak Euclidean --
-        # kalau enggak, hasilnya distorsi buat foto yang gak persegi.
-        pts = [
-            (landmarks[i].x * img_w, landmarks[i].y * img_h) for i in eye_idx
-        ]
+        pts = [(landmarks[i].x * img_w, landmarks[i].y * img_h) for i in eye_idx]
 
         def dist(p1, p2):
             return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
@@ -138,3 +126,41 @@ class FaceDetectorService:
         if horizontal == 0:
             return 0.0
         return vertical / (2.0 * horizontal)
+
+    def _estimate_yaw(self, landmarks, img_w: int, img_h: int) -> float:
+        """
+        Estimasi sudut yaw (nengok kiri/kanan) dalam derajat, pakai
+        cv2.solvePnP: membandingkan titik 2D di foto dengan model
+        wajah 3D generik, lalu menghitung rotasi kamera relatif terhadap
+        wajah tersebut.
+
+        Kalau solvePnP gagal (kadang terjadi kalau landmark kurang
+        stabil), return 0.0 (dianggap "menghadap depan") -- lebih aman
+        daripada melempar exception yang bikin seluruh request gagal.
+        """
+        points_2d = np.array([
+            (
+                landmarks[POSE_LANDMARK_IDX[name]].x * img_w,
+                landmarks[POSE_LANDMARK_IDX[name]].y * img_h,
+            )
+            for name in POSE_LANDMARK_IDX
+        ], dtype=np.float64)
+
+        camera_matrix = np.array([
+            [img_w, 0, img_w / 2],
+            [0, img_w, img_h / 2],
+            [0, 0, 1],
+        ], dtype=np.float64)
+
+        success, rotation_vec, _ = cv2.solvePnP(
+            FACE_3D_MODEL, points_2d, camera_matrix, None
+        )
+
+        if not success:
+            return 0.0
+
+        rotation_mat, _ = cv2.Rodrigues(rotation_vec)
+        sy = math.sqrt(rotation_mat[0, 0] ** 2 + rotation_mat[1, 0] ** 2)
+
+        yaw_rad = math.atan2(-rotation_mat[2, 0], sy)
+        return math.degrees(yaw_rad)
