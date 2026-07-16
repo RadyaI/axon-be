@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     "E1", "E2", "E3", "E4", "E5", "E6",
 ]
     # --- Concurrency Control ---
-    max_concurrent_inference: int = 1
+    max_concurrent_inference: int = 2   
 
     # --- Temporal Analysis ---
     temporal_window_size: int = 10

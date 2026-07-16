@@ -14,9 +14,9 @@ from app.core.config import settings
 
 EMOTION_WEIGHTS: dict[str, int] = {
     "Happiness": 85,
-    "Neutral": 75,
+    "Neutral": 80,      # sebelumnya 75
     "Surprise": 60,
-    "Contempt": 45,
+    "Contempt": 45, 
     "Sadness": 30,
     "Fear": 25,
     "Anger": 20,
@@ -100,17 +100,9 @@ class RuleEngine:
             abs(yaw) > settings.yaw_threshold_degrees for yaw in history[-threshold:]
         )
 
-    def _determine_status(
-        self, seat: str, smoothed_score: int, is_drowsy: bool, is_distracted: bool
-    ) -> str:
-        # Drowsy paling prioritas -- mata merem konsisten adalah sinyal
-        # paling tidak ambigu, override semua sinyal lain.
+    def _determine_status(self, seat: str, smoothed_score: int, is_drowsy: bool, is_distracted: bool) -> str:
         if is_drowsy:
             return "Drowsy"
-
-        # Distracted dicek SETELAH drowsy -- kalau ternyata mata juga
-        # merem, itu lebih tepat diklasifikasikan sebagai Drowsy, bukan
-        # Distracted (menengok bukan penyebab utamanya).
         if is_distracted:
             return "Distracted"
 
@@ -124,7 +116,7 @@ class RuleEngine:
 
         if is_consistently_low:
             return "Need Attention"
-        if smoothed_score >= 65:
+        if smoothed_score >= 60:   # sebelumnya 65
             return "Focused"
         return "Neutral"
 

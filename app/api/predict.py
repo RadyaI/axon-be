@@ -19,11 +19,8 @@ async def predict(
     seat: str = Form(...),
 ) -> PredictionResponse:
     """
-    Terima 1 foto dari ESP32-CAM + seat_id, kembalikan hasil analisis
+    Terima 1 foto dari ESP32-CAM, kembalikan hasil analisis
     engagement.
-
-    Foto HANYA diproses di memori (RAM) melalui `image.read()` di bawah —
-    tidak pernah ditulis ke disk, sesuai prinsip privasi proyek ini.
     """
     image_bytes = await image.read()
 
